@@ -42,19 +42,14 @@ alter table public.category_items enable row level security;
 create or replace function public.current_user_role()
 returns public.user_role
 language sql stable security definer set search_path = public
-as $$
-  select role from public.profiles where id = auth.uid();
-$$;
+as $$ select role from public.profiles where id = auth.uid(); $$;
 
 create or replace function public.is_staff()
 returns boolean
 language sql stable security definer set search_path = public
-as $$
-  select coalesce(public.current_user_role() in ('fondateur','co_fondateur','admin','staff','helpeur'), false);
-$$;
+as $$ select coalesce(public.current_user_role() in ('fondateur','co_fondateur','admin','staff','helpeur'), false); $$;
 
--- Profils : chaque membre peut lire son profil. Les rôles ne peuvent pas être
--- changés depuis le navigateur par un membre normal.
+-- Profils
 drop policy if exists profiles_select_own on public.profiles;
 create policy profiles_select_own on public.profiles
 for select to authenticated using (id = auth.uid() or public.is_staff());
@@ -63,11 +58,10 @@ drop policy if exists profiles_insert_own on public.profiles;
 create policy profiles_insert_own on public.profiles
 for insert to authenticated with check (id = auth.uid());
 
+-- Pas de UPDATE direct sur profiles : les rôles passent par set_user_role().
 drop policy if exists profiles_update_staff on public.profiles;
-create policy profiles_update_staff on public.profiles
-for update to authenticated using (public.is_staff()) with check (public.is_staff());
 
--- Tout le monde connecté peut voir les catégories et leur contenu.
+-- Tout membre connecté peut lire les catégories et leur contenu.
 drop policy if exists categories_select_authenticated on public.categories;
 create policy categories_select_authenticated on public.categories
 for select to authenticated using (true);
@@ -101,7 +95,7 @@ drop policy if exists category_items_delete_staff on public.category_items;
 create policy category_items_delete_staff on public.category_items
 for delete to authenticated using (public.is_staff());
 
--- Crée automatiquement un profil lors d'une inscription.
+-- Création automatique d'un profil à l'inscription.
 create or replace function public.handle_new_user()
 returns trigger
 language plpgsql security definer set search_path = public
@@ -119,6 +113,45 @@ create trigger on_auth_user_created
 after insert on auth.users
 for each row execute procedure public.handle_new_user();
 
--- IMPORTANT : après avoir créé ton compte, exécute cette ligne en remplaçant
--- EMAIL_FONDATEUR par ton adresse. Cela te donne les droits fondateur.
--- update public.profiles set role = 'fondateur' where id = (select id from auth.users where email = 'EMAIL_FONDATEUR');
+-- Gestion sécurisée des rôles depuis le panneau Admin.
+-- Fondateur : peut attribuer tous les rôles.
+-- Co-Fondateur : peut gérer admin/staff/helpeur/membre/co-fondateur, mais pas créer
+-- ou remplacer un Fondateur.
+create or replace function public.set_user_role(target_user_id uuid, new_role public.user_role)
+returns public.user_role
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  actor_role public.user_role;
+  target_role public.user_role;
+begin
+  select role into actor_role from public.profiles where id = auth.uid();
+  select role into target_role from public.profiles where id = target_user_id;
+
+  if actor_role is null then
+    raise exception 'Profil introuvable';
+  end if;
+
+  if actor_role = 'fondateur' then
+    null;
+  elsif actor_role = 'co_fondateur' then
+    if new_role = 'fondateur' or target_role = 'fondateur' then
+      raise exception 'Le Co-Fondateur ne peut pas modifier le Fondateur';
+    end if;
+  else
+    raise exception 'Permission refusée';
+  end if;
+
+  update public.profiles set role = new_role where id = target_user_id;
+  if not found then raise exception 'Membre introuvable'; end if;
+  return new_role;
+end;
+$$;
+
+grant execute on function public.set_user_role(uuid, public.user_role) to authenticated;
+
+-- Après avoir créé ton compte, exécute UNE FOIS cette ligne en remplaçant EMAIL_FONDATEUR.
+-- update public.profiles set role = 'fondateur'
+-- where id = (select id from auth.users where email = 'EMAIL_FONDATEUR');
