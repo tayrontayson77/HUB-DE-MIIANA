@@ -4,5 +4,5 @@
 // 3. Ne mets JAMAIS une service_role key ici.
 window.SUPABASE_CONFIG = {
   url: 'https://TON-PROJET.supabase.co',
-  anonKey: 'TA_CLE_ANON_PUBLIQUE'
+  anonKey: 'sb_publishable_9EjzLYEV2mFy7KdRFcN3Gw_k1XSUeeW'
 };
